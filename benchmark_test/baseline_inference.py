@@ -135,7 +135,7 @@ class BaselineInferenceEngine:
                 else:
                     response_text = response_data.get("result", response_data.get("output", ""))
 
-                response_text = response_text.strip()
+                response_text = (response_text or "").strip()
 
                 # 尝试提取JSON块
                 if "```json" in response_text:
@@ -194,9 +194,19 @@ class BaselineInferenceEngine:
         else:
             assessment = {}
 
+        try:
+            pred = int(assessment.get("predicted_default", 0))
+        except (ValueError, TypeError):
+            pred = 0
+
+        try:
+            conf = float(assessment.get("confidence", 0.5))
+        except (ValueError, TypeError):
+            conf = 0.5
+
         return {
-            "predicted_default": assessment.get("predicted_default", 0),
-            "confidence": assessment.get("confidence", 0.5),
+            "predicted_default": pred,
+            "confidence": conf,
             "risk_level": assessment.get("risk_level", "未知"),
             "key_risk_signals": assessment.get("key_risk_signals", []),
             "reasoning": assessment.get("reasoning", "")
@@ -302,8 +312,8 @@ class BaselineInferenceEngine:
             logger.error("Missing required columns for evaluation")
             return {}
 
-        y_true = result_df['Default'].values
-        y_pred = result_df['predicted_default'].values
+        y_true = pd.to_numeric(result_df['Default'], errors='coerce').fillna(0).astype(int).values
+        y_pred = pd.to_numeric(result_df['predicted_default'], errors='coerce').fillna(0).astype(int).values
 
         # 计算评估指标
         from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
