@@ -1,135 +1,155 @@
-"""独立测试脚本 - 验证SBA数据加载
-不依赖项目环境，仅测试数据加载和预处理逻辑
+"""独立测试脚本 - 验证多数据集数据加载
+不依赖LLM环境，仅测试数据加载、预处理和特征提取逻辑。
+
+用法：
+    python benchmark_test/test_data_loading.py              # 测试全部数据集
+    python benchmark_test/test_data_loading.py sba          # 仅测试SBA
+    python benchmark_test/test_data_loading.py lendingclub   # 仅测试LendingClub
+    python benchmark_test/test_data_loading.py homecredit    # 仅测试Home Credit
 """
 
-import pandas as pd
-import numpy as np
+import sys
 from pathlib import Path
 
-def test_sba_data_loading():
-    """测试SBA数据加载"""
-    data_path = Path('data/SBA/SBAcase.11.13.17.csv')
+BENCHMARK_DIR = Path(__file__).parent
+PROJECT_ROOT = BENCHMARK_DIR.parent
 
-    print("="*80)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _load_module(name):
+    """按模块名加载 data loader，绕过 benchmark_test.__init__ 的 json_repair 依赖"""
+    import importlib
+    return importlib.import_module(f"benchmark_test.{name}")
+
+
+def test_sba():
+    data_path = Path("data/SBA/SBAcase.11.13.17.csv")
+    if not data_path.exists():
+        print(f"[SKIP] SBA data not found: {data_path}")
+        return True
+
+    print("=" * 80)
     print("SBA Data Loading Test")
-    print("="*80)
+    print("=" * 80)
 
-    # 1. 加载原始数据
-    print("\n[Step 1] Loading raw data...")
-    df = pd.read_csv(data_path, encoding='utf-8-sig')
-    print(f"[OK] Loaded {len(df)} records, {len(df.columns)} columns")
-    print(f"[OK] Data shape: {df.shape}")
+    mod = _load_module("data_loader_sba")
+    loader = mod.SBADataLoader(data_path=str(data_path))
+    loader.preprocess()
 
-    # 2. 查看列名
-    print("\n[Step 2] Column names:")
-    print(df.columns.tolist())
+    summary = loader.get_data_summary()
+    features = loader.get_feature_columns()
+    X, y = loader.prepare_for_inference(sample_size=50)
 
-    # 3. 查看前几行
-    print("\n[Step 3] First 5 rows preview:")
-    print(df.head())
+    print(f"  Total records: {summary['total_records']}")
+    print(f"  Default rate:  {summary['default_rate']:.4f}")
+    print(f"  Features:      {len(features)} -> {features}")
+    print(f"  Sample shape:  X={X.shape}, y={len(y)}")
+    assert len(features) == 18, f"Expected 18 SBA features, got {len(features)}"
+    assert X.shape == (50, 18), f"Unexpected sample shape: {X.shape}"
+    assert y is not None and len(y) == 50
 
-    # 4. 检查目标变量
-    print("\n[Step 4] Target variable check:")
-    if 'Default' in df.columns:
-        print(f"[OK] Target 'Default' exists")
-        print(f"  - Default samples: {df['Default'].sum()}")
-        print(f"  - Non-default samples: {(df['Default'] == 0).sum()}")
-        print(f"  - Default rate: {df['Default'].mean():.4f}")
-        print(f"  - Data type: {df['Default'].dtype}")
-    else:
-        print("[FAIL] Target 'Default' not found")
-        return False
-
-    # 5. 数据预处理测试
-    print("\n[Step 5] Preprocessing test...")
-
-    # 处理日期列
-    date_columns = ['ApprovalDate', 'ChgOffDate', 'DisbursementDate']
-    for col in date_columns:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], format='%d%m%Y', errors='coerce')
-    print(f"[OK] Date columns processed: {date_columns}")
-
-    # 处理数值列
-    numeric_columns = ['Term', 'NoEmp', 'CreateJob', 'RetainedJob',
-                      'DisbursementGross', 'BalanceGross', 'ChgOffPrinGr',
-                      'GrAppv', 'SBA_Appv', 'daysterm']
-    for col in numeric_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    print(f"[OK] Numeric columns processed")
-
-    # 计算衍生特征
-    df['Portion'] = pd.to_numeric(df['Portion'], errors='coerce').fillna(0)
-    df['SBA_Guarantee_Rate'] = df['Portion']
-    df['Loan_Utilization'] = np.where(
-        df['DisbursementGross'] > 0,
-        df['BalanceGross'] / df['DisbursementGross'],
-        0
-    )
-    print(f"[OK] Derived features calculated")
-
-    # 6. 特征列检查
-    print("\n[Step 6] Feature columns check:")
-    feature_columns = [
-        'Term', 'NoEmp', 'NewExist', 'CreateJob', 'RetainedJob',
-        'DisbursementGross', 'GrAppv', 'SBA_Appv', 'SBA_Guarantee_Rate',
-        'New', 'RealEstate', 'Recession', 'Loan_Utilization',
-        'RevLineCr', 'LowDoc',
-        'NAICS', 'FranchiseCode', 'UrbanRural'
-    ]
-
-    available_features = [col for col in feature_columns if col in df.columns]
-    missing_features = [col for col in feature_columns if col not in df.columns]
-
-    print(f"[OK] Available features: {len(available_features)}/{len(feature_columns)}")
-    print(f"  - Available: {available_features}")
-    if missing_features:
-        print(f"  - Missing: {missing_features}")
-
-    # 7. 数据质量检查
-    print("\n[Step 7] Data quality check:")
-    print(f"  - Overall missing rate: {df.isnull().sum().sum() / (len(df) * len(df.columns)):.4f}")
-    print(f"  - Top 5 columns with missing values:")
-    missing_counts = df.isnull().sum().sort_values(ascending=False).head(5)
-    for col, count in missing_counts.items():
-        print(f"    * {col}: {count} ({count/len(df):.2%})")
-
-    # 8. 统计摘要
-    print("\n[Step 8] Data summary:")
-    summary = {
-        'total_records': len(df),
-        'default_rate': df['Default'].mean(),
-        'default_count': int(df['Default'].sum()),
-        'non_default_count': int((df['Default'] == 0).sum()),
-        'features': len(available_features),
-        'missing_rate': (df.isnull().sum() / len(df)).mean(),
-    }
-
-    for key, value in summary.items():
-        print(f"  - {key}: {value}")
-
-    # 9. 采样测试
-    print("\n[Step 9] Sampling test:")
-    sample_sizes = [10, 50, 100]
-    for size in sample_sizes:
-        if size <= len(df):
-            sample_df = df.sample(n=size, random_state=42)
-            sample_default_rate = sample_df['Default'].mean()
-            print(f"  - Sample {size} records: default_rate={sample_default_rate:.4f}")
-
-    print("\n" + "="*80)
-    print("[SUCCESS] Data loading test passed!")
-    print("="*80)
-
+    print("[OK] SBA data loading test passed\n")
     return True
 
+
+def test_lendingclub():
+    data_path = Path("data/predict_who_pays_back_loans/loan_data.csv")
+    if not data_path.exists():
+        print(f"[SKIP] LendingClub data not found: {data_path}")
+        return True
+
+    print("=" * 80)
+    print("LendingClub Data Loading Test")
+    print("=" * 80)
+
+    mod = _load_module("data_loader_lendingclub")
+    loader = mod.LendingClubDataLoader(data_path=str(data_path))
+    loader.preprocess()
+
+    summary = loader.get_data_summary()
+    features = loader.get_feature_columns()
+    X, y = loader.prepare_for_inference(sample_size=50)
+
+    print(f"  Total records: {summary['total_records']}")
+    print(f"  Default rate:  {summary['default_rate']:.4f}")
+    print(f"  Features:      {len(features)} -> {features}")
+    print(f"  Sample shape:  X={X.shape}, y={len(y)}")
+
+    assert len(features) == 13, f"Expected 13 LendingClub features, got {len(features)}"
+    assert X.shape == (50, 13), f"Unexpected sample shape: {X.shape}"
+    assert y is not None and len(y) == 50
+
+    print("[OK] LendingClub data loading test passed\n")
+    return True
+
+
+def test_homecredit():
+    data_path = Path("data/house_loan_data_analysis/loan_data (1).csv")
+    if not data_path.exists():
+        print(f"[SKIP] Home Credit data not found: {data_path}")
+        return True
+
+    print("=" * 80)
+    print("Home Credit Data Loading Test")
+    print("=" * 80)
+
+    mod = _load_module("data_loader_homecredit")
+    loader = mod.HomeCreditDataLoader(data_path=str(data_path))
+    loader.preprocess()
+
+    summary = loader.get_data_summary()
+    features = loader.get_feature_columns()
+    X, y = loader.prepare_for_inference(sample_size=50)
+
+    print(f"  Total records: {summary['total_records']}")
+    print(f"  Default rate:  {summary['default_rate']:.4f}")
+    print(f"  Features:      {len(features)} -> {features}")
+    print(f"  Sample shape:  X={X.shape}, y={len(y)}")
+
+    assert len(features) == 50, f"Expected 50 Home Credit features, got {len(features)}"
+    assert X.shape == (50, 50), f"Unexpected sample shape: {X.shape}"
+    assert y is not None and len(y) == 50
+
+    derived_cols = {"AGE_YEARS", "EMPLOYMENT_YEARS", "REGISTRATION_YEARS",
+                    "ID_PUBLISH_YEARS", "LAST_PHONE_CHANGE_DAYS",
+                    "CREDIT_INCOME_RATIO", "ANNUITY_INCOME_RATIO"}
+    missing_derived = derived_cols - set(features)
+    assert not missing_derived, f"Missing derived features: {missing_derived}"
+
+    print("[OK] Home Credit data loading test passed\n")
+    return True
+
+
+ALL_TESTS = {
+    "sba": test_sba,
+    "lendingclub": test_lendingclub,
+    "homecredit": test_homecredit,
+}
+
+
 if __name__ == "__main__":
-    try:
-        success = test_sba_data_loading()
-        exit(0 if success else 1)
-    except Exception as e:
-        print(f"\n[FAIL] Test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        exit(1)
+    targets = sys.argv[1:] if len(sys.argv) > 1 else list(ALL_TESTS.keys())
+    invalid = [t for t in targets if t not in ALL_TESTS]
+    if invalid:
+        print(f"Unknown dataset(s): {invalid}. Choose from: {list(ALL_TESTS.keys())}")
+        sys.exit(1)
+
+    results = {}
+    for name in targets:
+        try:
+            results[name] = ALL_TESTS[name]()
+        except Exception as e:
+            print(f"[FAIL] {name}: {e}")
+            import traceback
+            traceback.print_exc()
+            results[name] = False
+
+    print("=" * 80)
+    for name, ok in results.items():
+        status = "PASS" if ok else "FAIL"
+        print(f"  [{status}] {name}")
+    print("=" * 80)
+
+    sys.exit(0 if all(results.values()) else 1)

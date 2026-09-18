@@ -1,19 +1,34 @@
-# Benchmark Test - SBA Baseline 推理测试
+# Benchmark Test - 多数据集 Baseline 推理测试
 
 ## 概述
 
-`benchmark_test` 模块用于在 SBA (Small Business Administration) 贷款数据集上运行裸 LLM 推理，评估模型在 **无聚类、无 skill 演进** 条件下的信贷违约预测能力，作为 adaptive clustering 系统的 baseline 对照。
+`benchmark_test` 模块用于在多个信贷数据集上运行裸 LLM 推理，评估模型在 **无聚类、无 skill 演进** 条件下的信贷违约预测能力，作为 adaptive clustering 系统的 baseline 对照。
+
+当前支持的数据集：
+- **SBA** — Small Business Administration 小企业贷款（~90万条，35列）
+- **LendingClub** — P2P 个人贷款（~9578条，14列）
+- **Home Credit** — 消费信贷违约风险（~30.7万条，122列→筛选50个特征）
 
 ## 目录结构
 
 ```
 benchmark_test/
-├── __init__.py              # 模块初始化，导出 SBADataLoader 和 BaselineInferenceEngine
-├── sba_data_loader.py       # SBA 数据集加载与预处理
-├── baseline_inference.py    # Baseline 推理引擎（支持并发）
-├── run_baseline_test.py     # 测试主程序入口
-├── test_data_loading.py     # 独立数据加载验证脚本（不依赖 LLM）
-└── results/                 # 推理结果输出目录（自动创建）
+├── __init__.py                  # 模块初始化，导出所有 DataLoader 和 BaselineInferenceEngine
+├── baseline_inference.py        # Baseline 推理引擎（支持并发，target_column 可配置）
+├── logger.py                    # 日志工具
+├── data_loader_sba.py           # SBA 数据集加载与预处理
+├── data_loader_lendingclub.py   # LendingClub 数据集加载与预处理
+├── data_loader_homecredit.py    # Home Credit 数据集加载与预处理
+├── run_benchmark.py             # 统一测试入口（通过 --dataset 选择数据集）
+├── generate_sample_list.py      # 生成固定采样列表（行索引持久化到 JSON）
+├── test_data_loading.py         # 独立数据加载验证脚本（不依赖 LLM，支持全部数据集）
+├── prompts/
+│   ├── default_prompt.txt       # SBA 默认 prompt
+│   ├── lendingclub_prompt.txt   # LendingClub prompt
+│   └── homecredit_prompt.txt    # Home Credit prompt
+├── sample_lists/                # 固定采样列表目录（自动创建）
+├── full_test.sh                 # 完整测试脚本
+└── results/                     # 推理结果输出目录（自动创建）
 ```
 
 ## 运行流程
@@ -47,12 +62,45 @@ SBA CSV 数据 → 数据加载与预处理 → 特征筛选与采样 → LLM �
 ### 1. 验证数据加载（不需要 LLM）
 
 ```bash
+# 测试全部数据集
 python benchmark_test/test_data_loading.py
+
+# 仅测试某个数据集
+python benchmark_test/test_data_loading.py sba
+python benchmark_test/test_data_loading.py lendingclub
+python benchmark_test/test_data_loading.py homecredit
 ```
 
 独立脚本，验证 CSV 能否正确加载、预处理和特征提取，无需配置 API。
 
-### 2. 运行 Baseline 推理测试
+### 2. 生成固定采样列表（可选，适合大数据集）
+
+对于 Home Credit 等大数据集，可以先生成一份固定的采样索引列表，后续所有测试都基于同一批样本：
+
+```bash
+# Home Credit 抽 10%
+python benchmark_test/generate_sample_list.py --dataset homecredit --sample_ratio 0.1
+
+# 也可以按绝对数量抽样
+python benchmark_test/generate_sample_list.py --dataset homecredit --sample_size 5000
+
+# 自定义输出路径
+python benchmark_test/generate_sample_list.py --dataset homecredit --sample_ratio 0.1 --output my_list.json
+```
+
+生成的 JSON 文件保存在 `benchmark_test/sample_lists/` 下，包含采样元信息和行索引列表。后续推理时通过 `--sample_list` 指定即可复用：
+
+```bash
+python benchmark_test/run_benchmark.py --dataset homecredit \
+    --sample_list benchmark_test/sample_lists/homecredit_10pct.json \
+    --batch_size 10
+```
+
+### 3. 运行 Baseline 推理测试
+
+统一入口 `run_benchmark.py`，通过 `--dataset` 参数选择数据集：
+
+#### SBA 数据集
 
 ```bash
 # 基本用法 - 通过环境变量配置 API
@@ -60,12 +108,12 @@ export LLM_API_URL="https://your-api-endpoint/v1/chat/completions"
 export LLM_API_KEY="your-api-key"
 export LLM_MODEL_NAME="gpt-4"
 
-python benchmark_test/run_baseline_test.py
+python benchmark_test/run_benchmark.py --dataset sba
 
 # 完整参数示例
-python benchmark_test/run_baseline_test.py \
+python benchmark_test/run_benchmark.py --dataset sba \
     --data_path data/SBA/SBAcase.11.13.17.csv \
-    --output_dir benchmark_test/results \
+    --output_dir benchmark_test/results/sba_baseline \
     --sample_size 200 \
     --batch_size 10 \
     --model_name gpt-4 \
@@ -73,13 +121,45 @@ python benchmark_test/run_baseline_test.py \
     --api_key your-api-key
 ```
 
+#### LendingClub 数据集
+
+```bash
+# 小规模测试（10个样本）
+python benchmark_test/run_benchmark.py --dataset lendingclub --sample_size 10
+
+# 完整参数示例
+python benchmark_test/run_benchmark.py --dataset lendingclub \
+    --data_path data/predict_who_pays_back_loans/loan_data.csv \
+    --output_dir benchmark_test/results/lendingclub_baseline \
+    --sample_size 200 \
+    --batch_size 10 \
+    --prompt_template benchmark_test/prompts/lendingclub_prompt.txt
+```
+
+#### Home Credit 数据集
+
+```bash
+# 小规模测试（10个样本）
+python benchmark_test/run_benchmark.py --dataset homecredit --sample_size 10
+
+# 完整参数示例（注意文件名含空格，需要引号）
+python benchmark_test/run_benchmark.py --dataset homecredit \
+    --data_path "data/house_loan_data_analysis/loan_data (1).csv" \
+    --output_dir benchmark_test/results/homecredit_baseline \
+    --sample_size 200 \
+    --batch_size 10 \
+    --prompt_template benchmark_test/prompts/homecredit_prompt.txt
+```
+
 ### 命令行参数
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--data_path` | `data/SBA/SBAcase.11.13.17.csv` | SBA 数据集路径 |
-| `--output_dir` | `benchmark_test/results` | 结果输出目录 |
-| `--sample_size` | 全部 | 从数据集中随机采样的样本数 |
+| `--dataset` | （必填） | 数据集名称：`sba` / `lendingclub` / `homecredit` |
+| `--data_path` | 各数据集默认路径 | 数据集 CSV 文件路径 |
+| `--output_dir` | 各数据集默认输出目录 | 结果输出目录 |
+| `--sample_size` | 全部 | 从数据集中随机采样的样本数（与 `--sample_list` 互斥） |
+| `--sample_list` | 无 | 固定采样列表文件路径（由 `generate_sample_list.py` 生成，与 `--sample_size` 互斥） |
 | `--batch_size` | 串行 | 并发推理并行度（即同时发出的 LLM 请求数） |
 | `--prompt_template` | 内置模板 | 自定义 prompt 模板文件路径 |
 | `--api_url` | 环境变量 `LLM_API_URL` | LLM API 地址（OpenAI 兼容） |
@@ -90,9 +170,14 @@ python benchmark_test/run_baseline_test.py \
 
 ### 输入
 
-- **SBA CSV 数据集**（`SBAcase.11.13.17.csv`）：约 899,164 条贷款记录，35 列
+支持三个数据集：
 
-### 选用的 18 个特征
+#### 1. SBA 数据集
+
+- **文件**：`data/SBA/SBAcase.11.13.17.csv`，约 899,164 条贷款记录，35 列
+- **目标列**：`Default`（0=正常，1=违约）
+
+选用的 18 个特征：
 
 | 特征 | 语义 | 类型 |
 |------|------|------|
@@ -115,7 +200,7 @@ python benchmark_test/run_baseline_test.py \
 | FranchiseCode | 特许经营代码（0/1 为无特许经营） | 分类 |
 | UrbanRural | 城市(1) / 农村(2) / 未知(0) | 分类 |
 
-### 排除的列及原因
+排除的列及原因：
 
 | 排除列 | 原因 |
 |--------|------|
@@ -127,6 +212,102 @@ python benchmark_test/run_baseline_test.py \
 | BalanceGross, Portion | 已用于衍生特征计算 |
 | daysterm | 与 Term 语义重复 |
 | xx | 含义不明 |
+
+#### 2. LendingClub 数据集
+
+- **文件**：`data/predict_who_pays_back_loans/loan_data.csv`，约 9,578 条个人贷款记录，14 列
+- **目标列**：`not.fully.paid`（0=正常还款，1=未完全偿还）
+- **违约率**：约 16%
+
+全部 13 个特征（数据集本身很紧凑，无需筛选）：
+
+| 特征 | 语义 | 类型 |
+|------|------|------|
+| credit.policy | 是否满足LendingClub信贷审核标准 | 二值(0/1) |
+| purpose | 贷款用途 | 分类 |
+| int.rate | 贷款利率 | 数值 |
+| installment | 月还款额 | 数值 |
+| log.annual.inc | 年收入的自然对数 | 数值 |
+| dti | 债务收入比 | 数值 |
+| fico | FICO信用评分 | 数值 |
+| days.with.cr.line | 信用记录天数 | 数值 |
+| revol.bal | 循环信贷余额 | 数值 |
+| revol.util | 循环信贷使用率 (%) | 数值 |
+| inq.last.6mths | 近6个月信用查询次数 | 数值 |
+| delinq.2yrs | 近2年逾期次数 | 数值 |
+| pub.rec | 公共不良记录数 | 数值 |
+
+#### 3. Home Credit 数据集
+
+- **文件**：`data/house_loan_data_analysis/loan_data (1).csv`，约 307,511 条消费信贷申请记录，122 列
+- **目标列**：`TARGET`（0=正常还款，1=违约）
+- **违约率**：约 8%
+
+从 122 列中筛选 48 个原始特征（含 5 个 DAYS 列转换为可读格式）+ 2 个衍生特征（共 50 个）：
+
+| 特征 | 语义 | 类型 |
+|------|------|------|
+| NAME_CONTRACT_TYPE | 合同类型 (Cash/Revolving) | 分类 |
+| CODE_GENDER | 性别 | 分类 |
+| FLAG_OWN_CAR | 是否拥有汽车 | 二值(Y/N) |
+| FLAG_OWN_REALTY | 是否拥有房产 | 二值(Y/N) |
+| CNT_CHILDREN | 子女数量 | 数值 |
+| AMT_INCOME_TOTAL | 年收入总额 | 数值 |
+| AMT_CREDIT | 贷款信用额度 | 数值 |
+| AMT_ANNUITY | 贷款年金（每期还款额） | 数值 |
+| AMT_GOODS_PRICE | 贷款对应商品价格 | 数值 |
+| NAME_INCOME_TYPE | 收入来源类型 | 分类 |
+| NAME_EDUCATION_TYPE | 教育程度 | 分类 |
+| NAME_FAMILY_STATUS | 家庭状况 | 分类 |
+| NAME_HOUSING_TYPE | 住房类型 | 分类 |
+| AGE_YEARS | 申请人年龄（衍生自 DAYS_BIRTH） | 数值 |
+| EMPLOYMENT_YEARS | 工作年限（衍生自 DAYS_EMPLOYED） | 数值 |
+| OCCUPATION_TYPE | 职业类型 | 分类 |
+| CNT_FAM_MEMBERS | 家庭成员数 | 数值 |
+| REGION_RATING_CLIENT | 客户所在区域评级 (1最好, 3最差) | 分类 |
+| REGION_RATING_CLIENT_W_CITY | 区域评级（含城市维度） | 分类 |
+| REGION_POPULATION_RELATIVE | 所在地区相对人口密度 | 数值 |
+| EXT_SOURCE_1 | 外部数据源评分1 | 数值 |
+| EXT_SOURCE_2 | 外部数据源评分2 | 数值 |
+| EXT_SOURCE_3 | 外部数据源评分3 | 数值 |
+| OBS_30_CNT_SOCIAL_CIRCLE | 社交圈中30天可观测人数 | 数值 |
+| DEF_30_CNT_SOCIAL_CIRCLE | 社交圈中30天内违约人数 | 数值 |
+| OBS_60_CNT_SOCIAL_CIRCLE | 社交圈中60天可观测人数 | 数值 |
+| DEF_60_CNT_SOCIAL_CIRCLE | 社交圈中60天内违约人数 | 数值 |
+| AMT_REQ_CREDIT_BUREAU_MON | 过去1月征信查询次数 | 数值 |
+| AMT_REQ_CREDIT_BUREAU_QRT | 过去1季度征信查询次数 | 数值 |
+| AMT_REQ_CREDIT_BUREAU_YEAR | 过去1年征信查询次数 | 数值 |
+| REGISTRATION_YEARS | 更换登记信息距今年数（衍生自 DAYS_REGISTRATION） | 数值 |
+| ID_PUBLISH_YEARS | 身份证件更换距今年数（衍生自 DAYS_ID_PUBLISH） | 数值 |
+| LAST_PHONE_CHANGE_DAYS | 最后一次更换电话距今天数（衍生自 DAYS_LAST_PHONE_CHANGE） | 数值 |
+| HOUR_APPR_PROCESS_START | 申请提交时刻（0-23） | 数值 |
+| WEEKDAY_APPR_PROCESS_START | 申请提交星期几 | 分类 |
+| NAME_TYPE_SUITE | 申请时陪同人类型 | 分类 |
+| ORGANIZATION_TYPE | 雇主单位类型 | 分类 |
+| FLAG_EMP_PHONE | 是否提供工作电话 | 二值(0/1) |
+| FLAG_WORK_PHONE | 是否提供座机 | 二值(0/1) |
+| FLAG_CONT_MOBILE | 手机是否可联系 | 二值(0/1) |
+| FLAG_PHONE | 是否有家庭电话 | 二值(0/1) |
+| FLAG_EMAIL | 是否有邮箱 | 二值(0/1) |
+| REG_REGION_NOT_LIVE_REGION | 注册地与居住地不在同一地区 | 二值(0/1) |
+| REG_REGION_NOT_WORK_REGION | 注册地与工作地不在同一地区 | 二值(0/1) |
+| LIVE_REGION_NOT_WORK_REGION | 居住地与工作地不在同一地区 | 二值(0/1) |
+| REG_CITY_NOT_LIVE_CITY | 注册地与居住地不在同一城市 | 二值(0/1) |
+| REG_CITY_NOT_WORK_CITY | 注册地与工作地不在同一城市 | 二值(0/1) |
+| LIVE_CITY_NOT_WORK_CITY | 居住地与工作地不在同一城市 | 二值(0/1) |
+| CREDIT_INCOME_RATIO | 信贷收入比（衍生：AMT_CREDIT / AMT_INCOME_TOTAL） | 数值 |
+| ANNUITY_INCOME_RATIO | 年金收入比（衍生：AMT_ANNUITY / AMT_INCOME_TOTAL） | 数值 |
+
+排除的列及原因：
+
+| 排除列类别 | 数量 | 原因 |
+|------------|------|------|
+| SK_ID_CURR | 1 | 标识符，无预测意义 |
+| *_AVG / *_MODE / *_MEDI 及住房相关 | 47 | 住房信息三种统计口径高度冗余，缺失率均 >50%，标准化值无实际单位 |
+| FLAG_DOCUMENT_2~21 | 20 | 大部分只有单一取值（unique=1），无区分度 |
+| FLAG_MOBIL | 1 | 全部为 1，零方差 |
+| OWN_CAR_AGE | 1 | 缺失率 70% |
+| AMT_REQ_CREDIT_BUREAU_HOUR/DAY/WEEK | 3 | unique=1~2，几乎全为 0，无区分度 |
 
 ### 输出
 

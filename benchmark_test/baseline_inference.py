@@ -30,7 +30,8 @@ class BaselineInferenceEngine:
         output_dir: str = "./benchmark_test/results",
         api_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        model_name: Optional[str] = None
+        model_name: Optional[str] = None,
+        target_column: str = "Default"
     ):
         """
         初始化Baseline推理引擎
@@ -42,6 +43,7 @@ class BaselineInferenceEngine:
             api_key: LLM API密钥（优先使用，其次从环境变量LLM_API_KEY读取）
             model_name: 模型名称（优先使用，其次从环境变量LLM_MODEL_NAME读取）
         """
+        self.target_column = target_column
         self.prompt_template_path = prompt_template_path
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -83,7 +85,7 @@ class BaselineInferenceEngine:
         """格式化贷款信息为可读文本"""
         info_lines = []
         for key, value in loan_record.items():
-            if key != 'Default':  # 排除标签列
+            if key != self.target_column:
                 info_lines.append(f"- {key}: {value}")
         return "\n".join(info_lines)
 
@@ -111,7 +113,7 @@ class BaselineInferenceEngine:
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.7,
-                    "max_tokens": 1000
+                    "max_tokens": 8192
                 }
 
                 # 调用API
@@ -119,7 +121,7 @@ class BaselineInferenceEngine:
                     self.api_url,
                     headers=headers,
                     json=payload,
-                    timeout=60
+                    timeout=300
                 )
 
                 if response.status_code != 200:
@@ -308,11 +310,11 @@ class BaselineInferenceEngine:
         Returns:
             评估指标字典
         """
-        if 'Default' not in result_df.columns or 'predicted_default' not in result_df.columns:
-            logger.error("Missing required columns for evaluation")
+        if self.target_column not in result_df.columns or 'predicted_default' not in result_df.columns:
+            logger.error(f"Missing required columns for evaluation (need '{self.target_column}' and 'predicted_default')")
             return {}
 
-        y_true = pd.to_numeric(result_df['Default'], errors='coerce').fillna(0).astype(int).values
+        y_true = pd.to_numeric(result_df[self.target_column], errors='coerce').fillna(0).astype(int).values
         y_pred = pd.to_numeric(result_df['predicted_default'], errors='coerce').fillna(0).astype(int).values
 
         # 计算评估指标
