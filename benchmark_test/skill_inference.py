@@ -1,7 +1,18 @@
 """Skill推理引擎
 
-通过 Claude Code CLI 加载 skill 目录进行贷款风险评估。
-agent 以 skill 目录为工作目录，自主探索 SKILL.md、references、scripts 等资源。
+通过 Claude Code CLI 加载 skill 进行贷款风险评估。
+Claude 从 benchmark_test/.claude/skills/ 自动加载 skill。
+
+使用前需要手动准备 skill 目录结构：
+  benchmark_test/
+    .claude/
+      skills/
+        post-loan-management/
+          SKILL.md
+          references/
+          scripts/
+
+可以从 default_skill/skills/post-loan-management/ 复制过来。
 """
 
 import json
@@ -19,34 +30,47 @@ from benchmark_test.logger import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_SKILL_PATH = "benchmark_test/skills/post-loan-management"
-
 
 class SkillInferenceEngine:
     """Skill推理引擎 - 通过 Claude Code agent 加载 skill 进行风险评估"""
 
     def __init__(
         self,
-        skill_path: Optional[str] = None,
+        skill_name: str = "post-loan-management",
         output_dir: str = "./benchmark_test/results",
         target_column: str = "Default",
         max_workers: int = 4,
         claude_model: Optional[str] = None,
     ):
-        self.skill_path = Path(skill_path or DEFAULT_SKILL_PATH).resolve()
+        """
+        Args:
+            skill_name: skill 名称（对应 .claude/skills/ 下的子目录名）
+            output_dir: 输出目录
+            target_column: 目标列名
+            max_workers: 并发数
+            claude_model: Claude 模型名称（如 claude-sonnet-4-6）
+        """
+        self.benchmark_dir = Path(__file__).parent.resolve()
+        self.skill_dir = self.benchmark_dir / ".claude" / "skills" / skill_name
+        self.skill_name = skill_name
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.target_column = target_column
         self.max_workers = max_workers
         self.claude_model = claude_model
 
-        if not self.skill_path.exists():
+        if not self.skill_dir.exists():
             raise FileNotFoundError(
-                f"Skill directory not found: {self.skill_path}\n"
-                f"Please copy default_skill/skills/post-loan-management/ to {self.skill_path}"
+                f"Skill directory not found: {self.skill_dir}\n"
+                f"Please copy skill files to benchmark_test/.claude/skills/{skill_name}/\n"
+                f"Expected structure:\n"
+                f"  benchmark_test/.claude/skills/{skill_name}/SKILL.md\n"
+                f"  benchmark_test/.claude/skills/{skill_name}/references/\n"
+                f"  benchmark_test/.claude/skills/{skill_name}/scripts/"
             )
 
-        logger.info(f"Skill path: {self.skill_path}")
+        logger.info(f"Working directory: {self.benchmark_dir}")
+        logger.info(f"Skill directory: {self.skill_dir}")
         logger.info(f"Max workers: {self.max_workers}")
         if self.claude_model:
             logger.info(f"Claude model: {self.claude_model}")
@@ -65,20 +89,13 @@ class SkillInferenceEngine:
         """
         for attempt in range(max_retries):
             try:
-                cmd = [
-                    "claude",
-                    "--print",
-                    "--verbose",
-                    "--output-format", "text",
-                    "--max-turns", "3",
-                ]
+                cmd = ["claude", "--print", "-p", prompt]
                 if self.claude_model:
                     cmd.extend(["--model", self.claude_model])
-                cmd.extend(["--prompt", prompt])
 
                 result = subprocess.run(
                     cmd,
-                    cwd=str(self.skill_path),
+                    cwd=str(self.benchmark_dir),
                     capture_output=True,
                     text=True,
                     timeout=600,
@@ -127,10 +144,8 @@ class SkillInferenceEngine:
 
     def _build_prompt(self, loan_info: str) -> str:
         return (
-            "你是一个贷后管理风险评估专家。当前目录下有一个完整的贷后管理skill，"
-            "包括 SKILL.md（主要评估准则）、references/ 目录（参考政策文件）和 scripts/ 目录（辅助工具）。\n\n"
-            "请先阅读 SKILL.md 了解评估框架和标准，必要时参考 references/ 中的政策文件，"
-            "然后根据以下贷款信息进行风险评估。\n\n"
+            f"请根据你的 {self.skill_name} skill 中的评估框架和标准，"
+            "对以下贷款信息进行风险评估。\n\n"
             f"## 贷款信息\n{loan_info}\n\n"
             "请输出JSON格式结果（不要输出其他内容）：\n"
             '{"predicted_default": 0或1, "confidence": 0.0到1.0, "risk_level": "风险等级", '
