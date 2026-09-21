@@ -76,8 +76,8 @@ def main():
     parser.add_argument("--model_name", type=str, default=None)
     parser.add_argument("--mode", type=str, default="baseline", choices=["baseline", "skill"],
                         help="推理模式: baseline(直接LLM API) / skill(Claude Code加载skill)")
-    parser.add_argument("--skill_path", type=str, default=None,
-                        help="skill目录路径（仅 --mode skill 时生效）")
+    parser.add_argument("--skill_name", type=str, default="post-loan-management",
+                        help="skill名称（仅 --mode skill 时生效，对应 .claude/skills/<skill_name>/）")
     parser.add_argument("--claude_model", type=str, default=None,
                         help="Claude模型名称（仅 --mode skill 时生效）")
     args = parser.parse_args()
@@ -143,7 +143,7 @@ def main():
         logger.info("Step 3: Initializing Skill Inference Engine (Claude Code)...")
         from benchmark_test.skill_inference import SkillInferenceEngine
         engine = SkillInferenceEngine(
-            skill_path=args.skill_path,
+            skill_name=args.skill_name,
             output_dir=output_dir,
             target_column=target_column,
             max_workers=args.batch_size or 4,
