@@ -74,6 +74,12 @@ def main():
     parser.add_argument("--api_url", type=str, default=None)
     parser.add_argument("--api_key", type=str, default=None)
     parser.add_argument("--model_name", type=str, default=None)
+    parser.add_argument("--mode", type=str, default="baseline", choices=["baseline", "skill"],
+                        help="推理模式: baseline(直接LLM API) / skill(Claude Code加载skill)")
+    parser.add_argument("--skill_path", type=str, default=None,
+                        help="skill目录路径（仅 --mode skill 时生效）")
+    parser.add_argument("--claude_model", type=str, default=None,
+                        help="Claude模型名称（仅 --mode skill 时生效）")
     args = parser.parse_args()
 
     if args.sample_list and args.sample_size:
@@ -81,11 +87,17 @@ def main():
 
     cfg = DATASET_CONFIGS[args.dataset]
     label = cfg["label"]
-    output_dir = args.output_dir or cfg["output_dir"]
+    if args.output_dir:
+        output_dir = args.output_dir
+    elif args.mode == "skill":
+        output_dir = cfg["output_dir"].replace("_baseline", "_skill")
+    else:
+        output_dir = cfg["output_dir"]
     prompt_template = args.prompt_template or cfg["prompt_template"]
+    mode_label = "Skill (Claude Code)" if args.mode == "skill" else "Baseline"
 
     logger.info("=" * 80)
-    logger.info(f"{label} Baseline Inference Test")
+    logger.info(f"{label} {mode_label} Inference Test")
     logger.info("=" * 80)
     logger.info(f"Data path: {args.data_path or cfg['data_path']}")
     if args.sample_list:
@@ -127,21 +139,32 @@ def main():
     logger.info("")
 
     # Step 3: 初始化推理引擎
-    logger.info("Step 3: Initializing Baseline Inference Engine...")
-    from benchmark_test.baseline_inference import BaselineInferenceEngine
-    engine = BaselineInferenceEngine(
-        prompt_template_path=prompt_template,
-        output_dir=output_dir,
-        api_url=args.api_url,
-        api_key=args.api_key,
-        model_name=args.model_name,
-        target_column=target_column,
-    )
+    if args.mode == "skill":
+        logger.info("Step 3: Initializing Skill Inference Engine (Claude Code)...")
+        from benchmark_test.skill_inference import SkillInferenceEngine
+        engine = SkillInferenceEngine(
+            skill_path=args.skill_path,
+            output_dir=output_dir,
+            target_column=target_column,
+            max_workers=args.batch_size or 4,
+            claude_model=args.claude_model,
+        )
+    else:
+        logger.info("Step 3: Initializing Baseline Inference Engine...")
+        from benchmark_test.baseline_inference import BaselineInferenceEngine
+        engine = BaselineInferenceEngine(
+            prompt_template_path=prompt_template,
+            output_dir=output_dir,
+            api_url=args.api_url,
+            api_key=args.api_key,
+            model_name=args.model_name,
+            target_column=target_column,
+        )
     logger.info("Engine initialized")
     logger.info("")
 
     # Step 4: 批量推理
-    logger.info("Step 4: Running baseline inference...")
+    logger.info(f"Step 4: Running {mode_label.lower()} inference...")
     start_time = datetime.now()
     result_df = engine.infer_batch(
         df=inference_df,
@@ -154,10 +177,10 @@ def main():
     logger.info("")
 
     # Step 5: 评估性能
-    logger.info("Step 5: Evaluating baseline performance...")
+    logger.info(f"Step 5: Evaluating {mode_label.lower()} performance...")
     metrics = engine.evaluate(result_df)
 
-    logger.info("Baseline Performance Metrics:")
+    logger.info(f"{mode_label} Performance Metrics:")
     logger.info(f"  Accuracy: {metrics.get('accuracy', 0):.4f}")
     logger.info(f"  Precision: {metrics.get('precision', 0):.4f}")
     logger.info(f"  Recall: {metrics.get('recall', 0):.4f}")
@@ -169,14 +192,15 @@ def main():
     logger.info(f"  Predicted defaults: {metrics.get('predicted_default_count', 0)}")
     logger.info("")
 
-    metrics_path = Path(output_dir) / f"baseline_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    metrics_prefix = "skill_metrics" if args.mode == "skill" else "baseline_metrics"
+    metrics_path = Path(output_dir) / f"{metrics_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
     logger.info(f"Metrics saved to {metrics_path}")
 
     logger.info("=" * 80)
-    logger.info(f"{label} baseline test completed successfully!")
+    logger.info(f"{label} {mode_label.lower()} test completed successfully!")
     logger.info("=" * 80)
 
 
