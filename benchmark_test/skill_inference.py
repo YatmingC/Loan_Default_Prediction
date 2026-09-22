@@ -78,6 +78,10 @@ class SkillInferenceEngine:
         self.claude_model = claude_model
 
         self.claude_executable = _find_claude_executable()
+        schema_path = (Path(__file__).parent / "json_schemas" / "skill_inference_schema.json").resolve()
+        if not schema_path.exists():
+            raise FileNotFoundError(f"Schema file not found: {schema_path}")
+        self.schema_content = schema_path.read_text(encoding="utf-8").strip()
 
         if not self.skill_dir.exists():
             raise FileNotFoundError(
@@ -110,7 +114,12 @@ class SkillInferenceEngine:
         """
         for attempt in range(max_retries):
             try:
-                cmd = [self.claude_executable, "--print", "-p", prompt]
+                cmd = [
+                    self.claude_executable, "--print",
+                    "--output-format", "json",
+                    "--json-schema", self.schema_content,
+                    "-p", prompt,
+                ]
                 if self.claude_model:
                     cmd.extend(["--model", self.claude_model])
 
@@ -143,7 +152,19 @@ class SkillInferenceEngine:
                     )
                     continue
 
-                # 提取 JSON 块
+                # --output-format json 输出的是 {"result": ...} 包装
+                try:
+                    outer = json.loads(response_text)
+                    if isinstance(outer, dict) and "result" in outer:
+                        inner = outer["result"]
+                        if isinstance(inner, str):
+                            return json_repair.loads(inner)
+                        if isinstance(inner, dict):
+                            return inner
+                except json.JSONDecodeError:
+                    pass
+
+                # fallback: 直接解析或从 markdown 代码块中提取
                 if "```json" in response_text:
                     json_start = response_text.find("```json") + 7
                     json_end = response_text.find("```", json_start)

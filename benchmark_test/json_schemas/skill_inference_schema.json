@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "predicted_default": {
+      "type": "integer",
+      "description": "违约预测结果：0表示不违约，1表示违约"
+    },
+    "confidence": {
+      "type": "number",
+      "description": "预测置信度，0.0到1.0"
+    },
+    "risk_level": {
+      "type": "string",
+      "description": "风险等级"
+    },
+    "key_risk_signals": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "关键风险信号列表"
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "分析理由"
+    }
+  },
+  "required": ["predicted_default", "confidence", "risk_level", "key_risk_signals", "reasoning"],
+  "additionalProperties": false
+}
