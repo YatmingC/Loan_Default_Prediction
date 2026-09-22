@@ -17,6 +17,7 @@ Claude 从 benchmark_test/.claude/skills/ 自动加载 skill。
 
 import json
 import json_repair
+import shutil
 import subprocess
 import threading
 import concurrent.futures
@@ -29,6 +30,23 @@ from tqdm import tqdm
 from benchmark_test.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _find_claude_executable() -> str:
+    """查找 claude 可执行文件路径"""
+    path = shutil.which("claude")
+    if path:
+        return path
+    import sys
+    venv_scripts = Path(sys.executable).parent
+    for name in ("claude", "claude.exe", "claude.cmd"):
+        candidate = venv_scripts / name
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError(
+        "Cannot find 'claude' executable. "
+        "Make sure Claude Code CLI is installed and available in PATH or the current virtual environment."
+    )
 
 
 class SkillInferenceEngine:
@@ -59,6 +77,8 @@ class SkillInferenceEngine:
         self.max_workers = max_workers
         self.claude_model = claude_model
 
+        self.claude_executable = _find_claude_executable()
+
         if not self.skill_dir.exists():
             raise FileNotFoundError(
                 f"Skill directory not found: {self.skill_dir}\n"
@@ -69,6 +89,7 @@ class SkillInferenceEngine:
                 f"  benchmark_test/.claude/skills/{skill_name}/scripts/"
             )
 
+        logger.info(f"Claude executable: {self.claude_executable}")
         logger.info(f"Working directory: {self.benchmark_dir}")
         logger.info(f"Skill directory: {self.skill_dir}")
         logger.info(f"Max workers: {self.max_workers}")
@@ -89,19 +110,23 @@ class SkillInferenceEngine:
         """
         for attempt in range(max_retries):
             try:
-                cmd = ["claude", "--print", "-p", prompt]
+                cmd = [self.claude_executable, "--print", "-p", prompt]
                 if self.claude_model:
                     cmd.extend(["--model", self.claude_model])
 
                 result = subprocess.run(
                     cmd,
                     cwd=str(self.benchmark_dir),
-                    capture_output=True,
-                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     timeout=600,
                     encoding="utf-8",
                     errors="replace",
                 )
+
+                logger.debug(f"Claude returncode={result.returncode}")
+                if result.stderr:
+                    logger.debug(f"Claude stderr: {result.stderr[:500]}")
 
                 if result.returncode != 0:
                     logger.warning(
@@ -110,9 +135,12 @@ class SkillInferenceEngine:
                     )
                     continue
 
-                response_text = result.stdout.strip()
+                response_text = (result.stdout or "").strip()
                 if not response_text:
-                    logger.warning(f"Empty response (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(
+                        f"Empty stdout (attempt {attempt + 1}/{max_retries}), "
+                        f"stderr={result.stderr[:300] if result.stderr else 'none'}"
+                    )
                     continue
 
                 # 提取 JSON 块
