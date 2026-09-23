@@ -20,6 +20,7 @@ benchmark_test/
 ├── data_loader_lendingclub.py   # LendingClub 数据集加载与预处理
 ├── data_loader_homecredit.py    # Home Credit 数据集加载与预处理
 ├── run_benchmark.py             # 统一测试入口（通过 --dataset 选择数据集）
+├── adapt_to_clustering.py       # 离线适配器：benchmark 数据集 → main_multi_algo.py 输入目录
 ├── generate_sample_list.py      # 生成固定采样列表（行索引持久化到 JSON）
 ├── test_data_loading.py         # 独立数据加载验证脚本（不依赖 LLM，支持全部数据集）
 ├── prompts/
@@ -334,6 +335,73 @@ python benchmark_test/run_benchmark.py --dataset homecredit \
   "predicted_default_count": 43
 }
 ```
+
+## 接入自适应聚类主流程（adapt_to_clustering.py）
+
+`baseline` 只做直推评测；若要把 benchmark 数据集喂给 **自适应聚类 + skill 自演进** 主流程
+（`main_multi_algo.py`），需要一个**离线适配器**把数据集转成主流程期望的输入目录。
+`adapt_to_clustering.py` 就是做这件事的，**核心聚类算法零改动**，只复用本模块的 DataLoader。
+
+### 主流程期望的输入（硬编码，见 `src/utils.py::dataload`）
+
+- `<dir>/sampled_test_data_add_prompt.xlsx`：数据，列顺序为
+  `特征列… → Default → prompt → reasoning → answer → feedback`
+- `<dir>/columns_description.xlsx`：3 列 `name, dtype, role_desc`，与数据列**逐列一一对应**
+  - 特征列 → role `聚类`（dtype 由 pandas 类型推断：int/float，object 按基数 <50 记 `enum` 否则 `text`）
+  - `Default` → `enum` + `目标列`（0/1 int）
+  - `prompt` → `text` + `无`；`reasoning`/`answer`/`feedback` → `text` + `skill生成`
+
+> **关键耦合**：`main_multi_algo.py::get_score` 对每条样本读取 **`reasoning`**，strip 后
+> `endswith("是")`→pred=1 / `endswith("否")`→pred=0。因此适配器产出的 `reasoning`
+> **必须以 是/否 结尾**，语义取自直推 baseline 的 `predicted_default`（1→是，0→否），
+> 这样每簇的 `pre_compute_score` 就等于“直推 baseline 分数”。
+
+### 用法
+
+```bash
+# 1) 先跑/复用直推 baseline，产出 baseline_inference_*.json（见上文 run_benchmark）
+# 2) 适配：把数据集转成主流程输入目录
+python benchmark_test/adapt_to_clustering.py --dataset sba \
+    --baseline_result "benchmark_test/results/sba_baseline/baseline_inference_*.json" \
+    --output_dir benchmark_adapted/sba
+# 3) 跑聚类 + skill 自演进（与 mock_data 用法完全一致）
+python main_multi_algo.py -i benchmark_adapted/sba -o output_sba \
+    --max_iterations 3 --clustering_workspace ./clustering_workspace
+```
+
+### 复用固定采样列表（--sample_list）
+
+适配器与 `run_benchmark.py` / `generate_sample_list.py` **共用同一套选样逻辑**，
+所以同一个 sample_list 喂给 baseline 和适配器时，**取到的样本完全对齐**（行、特征、标签逐列一致），
+直推结果能按 `index` 精确匹配回来：
+
+```bash
+# 生成一次固定采样列表
+python benchmark_test/generate_sample_list.py --dataset homecredit --sample_ratio 0.1
+# baseline 与适配器都用同一份 list（样本严格对齐）
+python benchmark_test/run_benchmark.py --dataset homecredit \
+    --sample_list benchmark_test/sample_lists/homecredit_10pct.json
+python benchmark_test/adapt_to_clustering.py --dataset homecredit \
+    --sample_list benchmark_test/sample_lists/homecredit_10pct.json \
+    --baseline_result "benchmark_test/results/homecredit_baseline/baseline_inference_*.json" \
+    --output_dir benchmark_adapted/homecredit
+```
+
+### 适配器命令行参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--dataset` | （必填） | `sba` / `lendingclub` / `homecredit` |
+| `--data_path` | 数据集默认路径 | 覆盖默认 CSV 路径 |
+| `--sample_size` | 全部 | 随机采样数（固定种子 42，与 `--sample_list` 互斥） |
+| `--sample_list` | 无 | 复用 `generate_sample_list.py` 生成的固定采样列表（与 `--sample_size` 互斥） |
+| `--baseline_result` | 无 | 直推 baseline 结果 JSON（**支持 glob**，多匹配取最新）；缺失时全部落占位 stub |
+| `--prompt_template` | 数据集默认模板 | 自定义 prompt 模板 |
+| `--output_dir` | `benchmark_adapted/<dataset>` | 输出目录 |
+
+> **缺失 `--baseline_result` 时**：`reasoning`/`answer` 落中性占位（结尾统一 `否`，明确标注“占位待补”），
+> `pre_compute_score` 恒为 0 → 无条件触发 skill 演进。补上真实 baseline 后仅需改 `--baseline_result` 重跑。
+> baseline 里缺失（index 未对齐）的行也走同样的 stub 并计数告警。
 
 ## 关键设计
 

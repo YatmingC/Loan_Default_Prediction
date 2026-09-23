@@ -81,7 +81,8 @@ class SkillInferenceEngine:
         schema_path = (Path(__file__).parent / "json_schemas" / "skill_inference_schema.json").resolve()
         if not schema_path.exists():
             raise FileNotFoundError(f"Schema file not found: {schema_path}")
-        self.schema_content = schema_path.read_text(encoding="utf-8").strip()
+        schema_obj = json.loads(schema_path.read_text(encoding="utf-8"))
+        self.schema_content = json.dumps(schema_obj, ensure_ascii=False, separators=(",", ":"))
 
         if not self.skill_dir.exists():
             raise FileNotFoundError(
@@ -118,13 +119,14 @@ class SkillInferenceEngine:
                     self.claude_executable, "--print",
                     "--output-format", "json",
                     "--json-schema", self.schema_content,
-                    "-p", prompt,
+                    "-p", "-",
                 ]
                 if self.claude_model:
                     cmd.extend(["--model", self.claude_model])
 
                 result = subprocess.run(
                     cmd,
+                    input=prompt,
                     cwd=str(self.benchmark_dir),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
